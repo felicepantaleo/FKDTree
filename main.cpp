@@ -1,3 +1,4 @@
+#define NTREES 2
 #include <chrono>
 #include <sstream>
 #include <unistd.h>
@@ -245,9 +246,20 @@ int main(int argc, char* argv[])
 
 		std::chrono::steady_clock::time_point start_building =
 				std::chrono::steady_clock::now();
-		FKDTree<float, 3> kdtree(nPoints, points);
-
-		kdtree.build();
+		//FKDTree<float, 3> kdtree(nPoints, points);
+		unsigned int offset = 0;
+		unsigned int step = (unsigned int) ceil((double) nPoints/NTREES);
+		FKDTree<float, 3>* kdtree[NTREES];
+		for (int i = 0; i < NTREES; i++) {
+			unsigned int tPoints = (offset+step > nPoints)? nPoints-offset:step;
+			std::vector<FKDPoint<float, 3>>* ppoints = new std::vector<FKDPoint<float, 3>>;
+			ppoints->resize(tPoints);
+			for (int j = 0; j < tPoints; j++)
+				(*ppoints)[j] = points[offset+j];
+			kdtree[i] = new FKDTree<float, 3>(tPoints, *ppoints);
+			kdtree[i]->build();
+			offset += tPoints;
+		}
 		std::chrono::steady_clock::time_point end_building =
 				std::chrono::steady_clock::now();
 		std::cout << "building FKDTree with " << nPoints << " points took "
@@ -255,7 +267,7 @@ int main(int argc, char* argv[])
 				> (end_building - start_building).count() << "ms" << std::endl;
 		if (runTheTests)
 		{
-			if (kdtree.test_correct_build())
+			if (kdtree[0]->test_correct_build())
 				std::cout << "FKDTree built correctly" << std::endl;
 			else
 				std::cerr << "FKDTree wrong" << std::endl;
@@ -386,12 +398,12 @@ int main(int argc, char* argv[])
 					{
 						float* dummy_dim = (float*) (h_dimensions);
 						memcpy(&dummy_dim[nPoints * dim],
-								kdtree.getDimensionVector(dim).data(),
+								kdtree[0]->.getDimensionVector(dim).data(),
 								nPoints * sizeof(float));
 					}
 					memcpy(d_dimensions, h_dimensions,
 							3 * nPoints * sizeof(float));
-					memcpy(h_ids, kdtree.getIdVector().data(),
+					memcpy(h_ids, kdtree[0]->getIdVector().data(),
 							nPoints * sizeof(unsigned int));
 
 					memcpy(d_ids, h_ids, nPoints * sizeof(unsigned int));
@@ -544,18 +556,26 @@ int main(int argc, char* argv[])
 			host_dimensions = (float*)malloc(3*nPoints * sizeof(float));
 			host_results = (unsigned int*)malloc((nPoints + nPoints * maxResultSize)
 					* sizeof(unsigned int));
+			
+			int offset = 0;
+			for (int i = 0; i < NTREES; i++) {
+				//initialise ids
+				int tPoints = (offset + step > nPoints)? nPoints-offset: step;  
+				memcpy(host_ids+offset, kdtree[i]->getIdVector().data(),
+						tPoints * sizeof(unsigned int));
 
-			//initialise ids
-			memcpy(host_ids, kdtree.getIdVector().data(),
-					nPoints * sizeof(unsigned int));
+				//initialise dimensions
 
-			//initialise dimensions
-			for (int dim = 0; dim < 3; dim++)
-			{
-				memcpy(&host_dimensions[nPoints * dim],
-						kdtree.getDimensionVector(dim).data(),
-						nPoints * sizeof(float));
+				for (int dim = 0; dim < 3; dim++)
+				{
+					memcpy(&host_dimensions[3*offset + tPoints*dim],
+							kdtree[i]->getDimensionVector(dim).data(),
+							tPoints * sizeof(float));
+				}
+				offset += tPoints;
 			}
+
+			printf ("%d\n", offset);
 
 			// Device vectors
 			float *d_dim = 0;
@@ -590,7 +610,7 @@ int main(int argc, char* argv[])
 			cudaFree(d_ids);
 			cudaFree(d_results);
 
-			if (runTheTests)
+			//Xif (runTheTests)
 			{
 				int totalNumberOfPointsFound = 0;
 				for(int p = 0; p<nPoints; p++)
@@ -622,14 +642,14 @@ int main(int argc, char* argv[])
 
 			tbb::tick_count start_searching = tbb::tick_count::now();
 //		for (int i = 0; i < nPoints; ++i)
-//			pointsFound+=kdtree.search_in_the_box(minPoints[i], maxPoints[i]).size();
+//			pointsFound+=kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]).size();
 
 			tbb::parallel_for(0, nPoints, 1,
 					[&](unsigned int i)
 					{
 
-						auto foundPoints =kdtree.search_in_the_box(minPoints[i], maxPoints[i]);
-						if(!kdtree.test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
+						auto foundPoints =kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]);
+						if(!kdtree[0]->test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
 						exit(1);
 						partial_results[i] = foundPoints.size();
 
@@ -651,7 +671,7 @@ int main(int argc, char* argv[])
 				tbb::parallel_for(0, nPoints, 1, [&](unsigned int i)
 //				for (int i = 0; i < nPoints; ++i)
 						{
-							kdtree.search_in_the_box(minPoints[i], maxPoints[i]);
+							kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]);
 						});
 //				}
 			}
@@ -669,14 +689,14 @@ int main(int argc, char* argv[])
 
 				tbb::tick_count start_searching = tbb::tick_count::now();
 //		for (int i = 0; i < nPoints; ++i)
-//			pointsFound+=kdtree.search_in_the_box(minPoints[i], maxPoints[i]).size();
+//			pointsFound+=kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]).size();
 
 				tbb::parallel_for(0, nPoints, 1,
 						[&](unsigned int i)
 						{
 
-							std::vector<unsigned int> foundPoints= kdtree.search_in_the_box_branchless(minPoints[i], maxPoints[i]);
-							if(!kdtree.test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
+							std::vector<unsigned int> foundPoints= kdtree[0]->search_in_the_box_branchless(minPoints[i], maxPoints[i]);
+							if(!kdtree[0]->test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
 							exit(1);
 							partial_results[i] = foundPoints.size();
 
@@ -699,7 +719,7 @@ int main(int argc, char* argv[])
 //				for (int i = 0; i < nPoints; ++i)
 							{
 
-								std::vector<unsigned int> foundPoints= kdtree.search_in_the_box_branchless(minPoints[i], maxPoints[i]);
+								std::vector<unsigned int> foundPoints= kdtree[0]->search_in_the_box_branchless(minPoints[i], maxPoints[i]);
 							});
 //				}
 				}
@@ -718,14 +738,14 @@ int main(int argc, char* argv[])
 
 				tbb::tick_count start_searching = tbb::tick_count::now();
 //		for (int i = 0; i < nPoints; ++i)
-//			pointsFound+=kdtree.search_in_the_box(minPoints[i], maxPoints[i]).size();
+//			pointsFound+=kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]).size();
 
 				tbb::parallel_for(0, nPoints, 1,
 						[&](unsigned int i)
 						{
 
-							std::vector<unsigned int> foundPoints= kdtree.search_in_the_box_BFS(minPoints[i], maxPoints[i]);
-							if(!kdtree.test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
+							std::vector<unsigned int> foundPoints= kdtree[0]->search_in_the_box_BFS(minPoints[i], maxPoints[i]);
+							if(!kdtree[0]->test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
 							exit(1);
 							partial_results[i] = foundPoints.size();
 
@@ -748,7 +768,7 @@ int main(int argc, char* argv[])
 //				for (int i = 0; i < nPoints; ++i)
 							{
 
-								std::vector<unsigned int> foundPoints= kdtree.search_in_the_box_BFS(minPoints[i], maxPoints[i]);
+								std::vector<unsigned int> foundPoints= kdtree[0]->search_in_the_box_BFS(minPoints[i], maxPoints[i]);
 							});
 //				}
 				}
@@ -767,14 +787,14 @@ int main(int argc, char* argv[])
 
 				tbb::tick_count start_searching = tbb::tick_count::now();
 //		for (int i = 0; i < nPoints; ++i)
-//			pointsFound+=kdtree.search_in_the_box(minPoints[i], maxPoints[i]).size();
+//			pointsFound+=kdtree[0]->search_in_the_box(minPoints[i], maxPoints[i]).size();
 
 				tbb::parallel_for(0, nPoints, 1,
 						[&](unsigned int i)
 						{
 							std::vector<unsigned int> foundPoints;
-							kdtree.search_in_the_box_recursive(minPoints[i], maxPoints[i],foundPoints);
-							if(!kdtree.test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
+							kdtree[0]->search_in_the_box_recursive(minPoints[i], maxPoints[i],foundPoints);
+							if(!kdtree[0]->test_correct_search(foundPoints, minPoints[i], maxPoints[i]))
 							exit(1);
 							partial_results[i] = foundPoints.size();
 
@@ -798,7 +818,7 @@ int main(int argc, char* argv[])
 							{
 								std::vector<unsigned int> foundPoints;
 
-								kdtree.search_in_the_box_recursive(minPoints[i], maxPoints[i],foundPoints);
+								kdtree[0]->search_in_the_box_recursive(minPoints[i], maxPoints[i],foundPoints);
 							});
 //				}
 				}
