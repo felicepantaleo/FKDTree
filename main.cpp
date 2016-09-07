@@ -590,7 +590,7 @@ int main(int argc, char* argv[])
 			cudaFree(d_ids);
 			cudaFree(d_results);
 
-			if (runTheTests)
+			//if (runTheTests)
 			{
 				int totalNumberOfPointsFound = 0;
 				for(int p = 0; p<nPoints; p++)

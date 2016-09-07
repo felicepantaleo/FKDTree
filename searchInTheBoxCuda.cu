@@ -1,50 +1,54 @@
-#define MAX_SIZE 128
+/*! \file searchInTheBoxCuda.cu
+*CUDA file with search methods
+*/
+
+#define MAX_SIZE 40
 #define NUM_DIMENSIONS 3
 #define MAX_RESULT_SIZE 512
 #define RANGE 0.2f;
 #define BLOCKSIZE 256
+/*! Number of threads per thread group that are working in the same query*/
+#define THREADS_PER_QUERY 4
+/*! NUmber of queries per block. Derived by BLOCKSIZE and THREADS_PER_QUERY*/
+#define QUERIES_PER_BLOCK (BLOCKSIZE/THREADS_PER_QUERY)
 #include "cuda.h"
 #include <stdlib.h>
+#include <stdio.h>
+#include <limits.h>
 
+/*! CUDA stack that uses atomic operations*/
 typedef struct
-{
-    
+{    
     unsigned int data[MAX_SIZE];
-    unsigned int front;
-    unsigned int tail;
-    unsigned int size;
+    int size;
 } Queue;
 
+
+/*! Atomic stack push*/
 __device__ bool push_back(Queue* queue, unsigned int index)
 {
-    if (queue->size < MAX_SIZE)
+    int idx = atomicAdd(&queue->size,1);
+    if (idx < MAX_SIZE)
     {
-        queue->data[queue->tail] = index;
-        queue->tail = (queue->tail + 1) % MAX_SIZE;
-        queue->size++;
+	queue->data[idx] = index;
         return true;
     }
+    atomicSub(&queue->size,1);
     return false;
     
 }
 
+/*! Atomic stack pop*/
 __device__ unsigned int pop_front(Queue* queue)
 {
-    if (queue->size > 0)
+   int idx = atomicSub(&queue->size,1)-1;
+    if (idx >= 0)
     {
-        unsigned int element = queue->data[queue->front];
-        queue->front = (queue->front + 1) % MAX_SIZE;
-        queue->size--;
+	unsigned int element = queue->data[idx];
         return element;
     }
-}
-
-__device__ void erase_first_n_elements(Queue* queue, unsigned int n)
-{
-    unsigned int elementsToErase = queue->size - n > 0 ? n : queue->size;
-    queue->size -=elementsToErase;
-    queue->front = (queue->front + elementsToErase) % MAX_SIZE;
-    
+    atomicAdd(&queue->size,1);
+    return INT_MAX;
 }
 
 
@@ -81,94 +85,81 @@ __device__ bool isInTheBox(unsigned int index,  float* theDimensions, unsigned i
     return inTheBox;
 }
 
-
+//! The k-d tree search function that uses a shared stack
+/*! This k-d tree search __global__ function performs box queries in the k-d tree. The k-d tree points are used for box centers. 
+* CUDA threads are group together and each group shares a search stack (DFS is used). Synchronization through atomics. THREADS_PER_QUERY, QUERIES_PER_BLOCK, BLOCKSIZE defined * in the file.
+\param nPoints the number of points in the k-d tree
+\param dimensions the coordinates of the points in the k-d tree
+\param ids the identifiers of the points in the k-d tree
+\param results the array with the results of the queries
+*/
 __global__ void CUDASearchInTheKDBox(unsigned int nPoints,  float* dimensions,  unsigned int* ids,  unsigned int* results)
 {
-    
-    // Global Thread ID
-    unsigned int point_index = blockIdx.x*blockDim.x+threadIdx.x;
-    
-    //	float range = 0.1f;
-    if(point_index < nPoints)
-    {
-        
-        int theDepth = floor(log2((float)nPoints));
-        float minPoint[NUM_DIMENSIONS];
-        float maxPoint[NUM_DIMENSIONS];
-        for(int i = 0; i<NUM_DIMENSIONS; ++i)
-        {
-            minPoint[i] = dimensions[nPoints*i+point_index] - RANGE;
-            maxPoint[i] = dimensions[nPoints*i+point_index] + RANGE;
-        }
-        
-        Queue indecesToVisit;
-        indecesToVisit.front = indecesToVisit.tail =indecesToVisit.size =0;
-        unsigned int pointsFound=0;
-        unsigned int resultIndex = nPoints + MAX_RESULT_SIZE*point_index;
-        push_back(&indecesToVisit, 0);
-        
-        for (int depth = 0; depth < theDepth + 1; ++depth)
-        {
-            int dimension = depth % NUM_DIMENSIONS;
-            unsigned int numberOfIndecesToVisitThisDepth =
-            indecesToVisit.size;
-            
-            for (unsigned int visitedIndecesThisDepth = 0;
-                 visitedIndecesThisDepth < numberOfIndecesToVisitThisDepth;
-                 visitedIndecesThisDepth++)
-            {
-                
-                //				unsigned int index = indecesToVisit.data[(indecesToVisit.front+visitedIndecesThisDepth)% MAX_SIZE];
-                unsigned int index = pop_front(&indecesToVisit);
-                //				if(point_index == 0)
-                //				{
-                //					printf("index: %d, dimensions: %f %f %f\n", index, dimensions[index], dimensions[nPoints+index], dimensions[2*nPoints+index]);
-                //				}
-                
-                bool intersection = intersects(index,dimensions, nPoints, minPoint, maxPoint,
-                                               dimension);
-                
-                if(intersection && isInTheBox(index, dimensions, nPoints, minPoint, maxPoint))
-                {
-                    if(pointsFound < MAX_RESULT_SIZE)
-                    {
-                        //						if(point_index == 0)
-                        //						{
-                        //							printf("index: %d added to results", index);
-                        //						}
-                        
-                        results[resultIndex] = index;
-                        resultIndex++;
-                        pointsFound++;
-                    }
-                    
-                }
-                
-                bool isLowerThanBoxMin = dimensions[nPoints*dimension + index]
-                < minPoint[dimension];
-                int startSon = isLowerThanBoxMin; //left son = 0, right son =1
-                
-                int endSon = isLowerThanBoxMin || intersection;
-                
-                for (int whichSon = startSon; whichSon < endSon + 1; ++whichSon)
-                {
-                    unsigned int indexToAdd = leftSonIndex(index) + whichSon;
-                    
-                    if (indexToAdd < nPoints)
-                    {
-                        push_back(&indecesToVisit,indexToAdd);
-                    
-                    }
-                }
-            }
-            
-            //			erase_first_n_elements(&indecesToVisit,numberOfIndecesToVisitThisDepth );
-        }
-        
-        results[point_index] = pointsFound;
-        
-    }
-    
+	unsigned int point_index = blockIdx.x*QUERIES_PER_BLOCK+threadIdx.x/THREADS_PER_QUERY;
+	unsigned int tid = threadIdx.x%THREADS_PER_QUERY;
+	unsigned int gid = threadIdx.x/THREADS_PER_QUERY;
+	/*shared structure*/
+	__shared__ Queue indecesToVisit[QUERIES_PER_BLOCK];
+	__shared__ unsigned int pointsFound[QUERIES_PER_BLOCK];
+	
+	
+	if(point_index < nPoints) {
+		/*group gets its respective box*/
+		int theDepth = floor(log2((float)nPoints));
+		float minPoint[NUM_DIMENSIONS];
+		float maxPoint[NUM_DIMENSIONS];
+		for(int i = 0; i<NUM_DIMENSIONS; ++i) {
+			minPoint[i] = dimensions[nPoints*i+point_index] - RANGE;
+			maxPoint[i] = dimensions[nPoints*i+point_index] + RANGE;
+		}
+
+		unsigned int resultIndex = nPoints + MAX_RESULT_SIZE*point_index;
+		if (tid == 0) {
+			indecesToVisit[gid].size =0;
+			push_back(&indecesToVisit[gid], 0);
+			pointsFound[gid] = 0;
+		}
+
+		__syncthreads();
+        	/*terminate when stack is empty-syncthreads ensure that this check is synchronized*/
+        	while (indecesToVisit[gid].size > 0) {
+			__syncthreads();
+			/*each thread gets its index*/
+			unsigned int index = pop_front(&indecesToVisit[gid]);	
+			int dimension = ((int) floor(log2((float)index+1))) % NUM_DIMENSIONS;
+			/*expand endex*/
+			if (index < nPoints) {
+				bool intersection = intersects(index,dimensions, nPoints, minPoint, maxPoint,dimension);
+
+				if(intersection && isInTheBox(index, dimensions, nPoints, minPoint, maxPoint)) {
+					if(pointsFound[gid] < MAX_RESULT_SIZE) {
+						int offset = atomicAdd(&pointsFound[gid], 1);
+						results[resultIndex+offset] = index;
+					}
+				}
+			
+				bool isLowerThanBoxMin = dimensions[nPoints*dimension + index] < minPoint[dimension];
+	                	int startSon = isLowerThanBoxMin;
+
+        	        	int endSon = isLowerThanBoxMin || intersection;
+		
+				for (int whichSon = startSon; whichSon < endSon + 1; ++whichSon) {
+					unsigned int indexToAdd = leftSonIndex(index) + whichSon;
+
+					if (indexToAdd < nPoints) {
+						push_back(&indecesToVisit[gid],indexToAdd);
+					}
+				}
+			}
+			/*synchronoze for next check*/
+			__syncthreads();
+		}
+		
+		/*post results*/
+		if (tid == 0) {
+			results[point_index] = pointsFound[gid];
+		}
+	}    
 }
 
 void CUDAKernelWrapper(unsigned int nPoints,float *d_dim,unsigned int *d_ids,unsigned int *d_results)
@@ -176,11 +167,9 @@ void CUDAKernelWrapper(unsigned int nPoints,float *d_dim,unsigned int *d_ids,uns
 
 
     // Number of thread blocks
-    unsigned int gridSize = (int)ceil((float)nPoints/BLOCKSIZE);
-    
-    CUDASearchInTheKDBox<<<gridSize, BLOCKSIZE>>>(nPoints, d_dim, d_ids,d_results);
+	unsigned int gridSize = (int)ceil((float)nPoints*THREADS_PER_QUERY/BLOCKSIZE);
 
-
-    
+	CUDASearchInTheKDBox<<<gridSize, BLOCKSIZE>>>(nPoints, d_dim, d_ids,d_results);
+	printf("%s\n", cudaGetErrorString(cudaGetLastError()));    
 }
 
