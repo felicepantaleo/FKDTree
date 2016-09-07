@@ -22,8 +22,10 @@
 #include "FKDPoint.h"
 #include "KDTreeLinkerAlgoT.h"
 
+#define MAX_FRONTIER 256
+
 #ifdef __USE_CUDA__
-void CUDAKernelWrapper(unsigned int nPoints,float *h_dim,unsigned int *h_ids,unsigned int *h_results);
+void CUDAKernelWrapper(unsigned int nPoints,float *h_dim,unsigned int *h_ids,unsigned int *h_results, unsigned int* debug);
 #endif
 
 #ifndef __USE_CUDA__
@@ -533,16 +535,18 @@ int main(int argc, char* argv[])
 #ifdef __USE_CUDA__
 		if (runCuda)
 		{
-			const size_t maxResultSize = 512;
+			const size_t maxResultSize = 25;
 
 			unsigned int* host_ids;
 			float* host_dimensions;
 			unsigned int* host_results;
 
+			unsigned int nQueries = nPoints*256;
+
 			// host allocations
 			host_ids = (unsigned int*)malloc(nPoints * sizeof(unsigned int));
 			host_dimensions = (float*)malloc(3*nPoints * sizeof(float));
-			host_results = (unsigned int*)malloc((nPoints + nPoints * maxResultSize)
+			host_results = (unsigned int*)malloc((nPoints + nQueries * maxResultSize)
 					* sizeof(unsigned int));
 
 			//initialise ids
@@ -565,24 +569,28 @@ int main(int argc, char* argv[])
 			// Allocate device memory
 			cudaMalloc(&d_dim, 3*nPoints * sizeof(float));
 			cudaMalloc(&d_ids, nPoints * sizeof(unsigned int));
-			cudaMalloc(&d_results, (nPoints + nPoints * maxResultSize)
+			cudaMalloc(&d_results, (nPoints + nQueries * maxResultSize)
 					* sizeof(unsigned int));
-
+			
 			// Copy host vectors to device
 			cudaMemcpy( d_dim, host_dimensions, 3*nPoints * sizeof(float), cudaMemcpyHostToDevice);
 			cudaMemcpy( d_ids, host_ids, nPoints * sizeof(unsigned int), cudaMemcpyHostToDevice);
 			//cudaMemcpy( d_results, host_results, (nPoints + nPoints * maxResultSize)* sizeof(unsigned int), cudaMemcpyHostToDevice);
+			//cudaMemset(d_results,0,(nQueries + nQueries * maxResultSize) * sizeof(unsigned int));
+
+			unsigned int* debug;
+			cudaMalloc (&debug, nPoints*(MAX_FRONTIER+2*16)*sizeof(unsigned int));
 
 			tbb::tick_count start_searching_CUDA =
 			tbb::tick_count::now();
 
-			CUDAKernelWrapper(nPoints,d_dim,d_ids,d_results);
+			CUDAKernelWrapper(nPoints,d_dim,d_ids,d_results,debug);
 			cudaStreamSynchronize(0);
 			tbb::tick_count end_searching_CUDA =
 			tbb::tick_count::now();
 
 			// Back to host
-			cudaMemcpy( host_results, d_results, (nPoints + nPoints * maxResultSize)
+			cudaMemcpy( host_results, d_results, (nPoints + nQueries * maxResultSize)
 					* sizeof(unsigned int), cudaMemcpyDeviceToHost );
 
 			// Release device memory
@@ -590,14 +598,14 @@ int main(int argc, char* argv[])
 			cudaFree(d_ids);
 			cudaFree(d_results);
 
-			if (runTheTests)
+//			if (runTheTests)
 			{
 				int totalNumberOfPointsFound = 0;
 				for(int p = 0; p<nPoints; p++)
 				{
 					unsigned int length = host_results[p];
 					totalNumberOfPointsFound += length;
-					int firstIndex = nPoints + maxResultSize*p;
+					int firstIndex = nQueries + maxResultSize*p;
 
 				}
 
