@@ -1,0 +1,6 @@
+Tested with cuda release 7.5, V7.5.21
+ (power8 cern system)
+
+make
+
+./kdtree gives instructions
