@@ -59,54 +59,7 @@ public:
 
 	FKDTree(const FKDTree<TYPE, numberOfDimensions>& v);
 
-	FKDTree(FKDTree<TYPE, numberOfDimensions> && other)
-	{
-		theNumberOfPoints(std::move(other.theNumberOfPoints));
-		theDepth(std::move(other.theDepth));
 
-		theIntervalLength.clear();
-		theIntervalMin.clear();
-		theIds.clear();
-		thePoints.clear();
-		for (auto& x : theDimensions)
-			x.clear();
-
-		theIntervalLength = std::move(other.theIntervalLength);
-		theIntervalMin = std::move(other.theIntervalMin);
-		theIds = std::move(other.theIds);
-
-		thePoints = std::move(other.thePoints);
-		for (unsigned int i = 0; i < numberOfDimensions; ++i)
-			theDimensions = std::move(other.theDimensions);
-	}
-
-	FKDTree<TYPE, numberOfDimensions>& operator=(
-			FKDTree<TYPE, numberOfDimensions> && other)
-	{
-
-		if (this != &other)
-		{
-			theNumberOfPoints(std::move(other.theNumberOfPoints));
-			theDepth(std::move(other.theDepth));
-
-			theIntervalLength.clear();
-			theIntervalMin.clear();
-			theIds.clear();
-			thePoints.clear();
-			for (auto& x : theDimensions)
-				x.clear();
-
-			theIntervalLength = std::move(other.theIntervalLength);
-			theIntervalMin = std::move(other.theIntervalMin);
-			theIds = std::move(other.theIds);
-
-			thePoints = std::move(other.thePoints);
-			for (unsigned int i = 0; i < numberOfDimensions; ++i)
-				theDimensions = std::move(other.theDimensions);
-		}
-		return *this;
-
-	}
 
 	void push_back(const FKDPoint<TYPE, numberOfDimensions>& point)
 	{

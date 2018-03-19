@@ -11,7 +11,7 @@
 #include <CL/cl.h>
 #include "cl_helper.h"
 #endif
-
+#include <numeric>
 #ifdef __USE_CUDA__
 #include "cuda.h"
 #include "cuda_runtime.h"

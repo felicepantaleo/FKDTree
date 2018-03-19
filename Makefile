@@ -3,7 +3,7 @@ LIBS = -ltbb
 
 CUDAOBJECT =
 USE_CUDA = NO
-USE_OPENCL = NO
+USE_OPENCL = YES
 
 CC=g++
 NVCC=nvcc
